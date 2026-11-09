@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 alexytomi
 
+#include <android/api-level.h>
 #include <android/log.h>
 #include <asm/unistd.h>
 #include <dlfcn.h>
@@ -165,15 +166,56 @@ static bool resolve_dl_funcs(private_dl_funcs *privateDlFuncs, void *handle, boo
     return privateDlFuncs->dlopen && privateDlFuncs->dlopen_ext && privateDlFuncs->dlclose && privateDlFuncs->dlsym;
 }
 
-// Linker namespace funcs always need private API
+static bool requires_all_libs_function(void)
+{
+    int api_level = android_get_device_api_level();
+    // Android 8의 linker에는 이름 지정 연결만 있고 all-libs 연결은 없다.
+    return api_level != 26 && api_level != 27;
+}
+
+static bool has_required_namespace_funcs(const private_namespace_funcs *funcs)
+{
+    return funcs->create_namespace &&
+            funcs->link_namespaces &&
+            funcs->get_exported_namespace &&
+            (!requires_all_libs_function() || funcs->link_namespaces_all_libs);
+}
+
+// namespace 함수는 private API로 조회한다.
 static bool resolve_linker_funcs(private_namespace_funcs *funcs, void *handle, private_dl_funcs *privateDlFuncs)
 {
-    if (!handle) return false;
-    if (!funcs->create_namespace) funcs->create_namespace = resolve_symbol(handle, "__loader_android_create_namespace", privateDlFuncs, true);
-    if (!funcs->link_namespaces) funcs->link_namespaces = resolve_symbol(handle, "__loader_android_link_namespaces", privateDlFuncs, true);
-    if (!funcs->link_namespaces_all_libs) funcs->link_namespaces_all_libs = resolve_symbol(handle, "__loader_android_link_namespaces_all_libs", privateDlFuncs, true);
-    if (!funcs->get_exported_namespace) funcs->get_exported_namespace = resolve_symbol(handle, "__loader_android_get_exported_namespace", privateDlFuncs, true);
-    return funcs->create_namespace && funcs->link_namespaces && funcs->link_namespaces_all_libs && funcs->get_exported_namespace;
+    if (!handle) {
+        return false;
+    }
+    if (!funcs->create_namespace) {
+        funcs->create_namespace = resolve_symbol(
+                handle,
+                "__loader_android_create_namespace",
+                privateDlFuncs,
+                true);
+    }
+    if (!funcs->link_namespaces) {
+        funcs->link_namespaces = resolve_symbol(
+                handle,
+                "__loader_android_link_namespaces",
+                privateDlFuncs,
+                true);
+    }
+    if (requires_all_libs_function() && !funcs->link_namespaces_all_libs) {
+        funcs->link_namespaces_all_libs = resolve_symbol(
+                handle,
+                "__loader_android_link_namespaces_all_libs",
+                privateDlFuncs,
+                true);
+    }
+    if (!funcs->get_exported_namespace) {
+        funcs->get_exported_namespace = resolve_symbol(
+                handle,
+                "__loader_android_get_exported_namespace",
+                privateDlFuncs,
+                true);
+    }
+    return has_required_namespace_funcs(funcs);
 }
 
 /*
@@ -434,10 +476,21 @@ private_namespace_funcs get_private_namespace_functions(
 
     LOGW("Unable to load all namespace functions! dlFunction loading probably failed? Obtaining missing functions using memory scanning.");
     linkerHandle = nsbypass_dlopen(LINKER, 0);
-    if (!linkerFuncs.create_namespace) linkerFuncs.create_namespace = nsbypass_dlsym(linkerHandle, "__loader_android_create_namespace");
-    if (!linkerFuncs.link_namespaces) linkerFuncs.link_namespaces = nsbypass_dlsym(linkerHandle, "__loader_android_link_namespaces");
-    if (!linkerFuncs.link_namespaces_all_libs) linkerFuncs.link_namespaces_all_libs = nsbypass_dlsym(linkerHandle, "__loader_android_link_namespaces_all_libs");
-    if (!linkerFuncs.get_exported_namespace) linkerFuncs.get_exported_namespace = nsbypass_dlsym(linkerHandle, "__loader_android_get_exported_namespace");
+    if (!linkerHandle) {
+        return linkerFuncs;
+    }
+    if (!linkerFuncs.create_namespace) {
+        linkerFuncs.create_namespace = nsbypass_dlsym(linkerHandle, "__loader_android_create_namespace");
+    }
+    if (!linkerFuncs.link_namespaces) {
+        linkerFuncs.link_namespaces = nsbypass_dlsym(linkerHandle, "__loader_android_link_namespaces");
+    }
+    if (requires_all_libs_function() && !linkerFuncs.link_namespaces_all_libs) {
+        linkerFuncs.link_namespaces_all_libs = nsbypass_dlsym(linkerHandle, "__loader_android_link_namespaces_all_libs");
+    }
+    if (!linkerFuncs.get_exported_namespace) {
+        linkerFuncs.get_exported_namespace = nsbypass_dlsym(linkerHandle, "__loader_android_get_exported_namespace");
+    }
 
     return linkerFuncs;
 }
@@ -498,6 +551,15 @@ bool test_namespace_funcs(private_namespace_funcs nsFuncs)
         return false;
     }
 
+    if (!nsFuncs.link_namespaces_all_libs) {
+        // API 26–27도 기본 namespace 연결은 실제로 검증한다.
+        if (!nsFuncs.link_namespaces(testNs, NULL, "libc.so")) {
+            LOGE("Named namespace linking failed on Android 8");
+            passed = false;
+        }
+        return passed;
+    }
+
     if (nsFuncs.link_namespaces_all_libs(testNs, escapeNs)){
         LOGI("android_link_namespaces_all_libs successfully linked testNs to escapeNs, thereby escaping our testNs!");
         if (nsFuncs.link_namespaces(testNs, NULL, "ld-android.so")){
@@ -508,6 +570,7 @@ bool test_namespace_funcs(private_namespace_funcs nsFuncs)
         }
     } else {
         LOGE("android_link_namespaces_all_libs failed to link testNs to escapeNs, unable to escape. FAIL");
+        passed = false;
         if (nsFuncs.link_namespaces(testNs, NULL, "libc.so")){
             LOGI("android_link_namespaces successfully loaded libc.so into testNs, kinda useless");
         } else {
@@ -520,8 +583,7 @@ bool test_namespace_funcs(private_namespace_funcs nsFuncs)
 }
 
 /**
- * Resolves all the global externs at load time, so they should always be available.
- * Fails hard if any of them are not.
+ * 로딩 시 필수 함수를 확보한다. API 26–27의 all-libs 연결만 선택 기능이다.
  */
 __attribute__((constructor)) static void resolve_global_symbols()
 {
@@ -534,15 +596,12 @@ __attribute__((constructor)) static void resolve_global_symbols()
     s_privateDlFuncs = get_private_dl_functions();
     test_dlfuncs(s_privateDlFuncs);
     s_linkerFuncs = get_private_namespace_functions(s_privateDlFuncs);
-    test_namespace_funcs(s_linkerFuncs);
 
-    if (!s_linkerFuncs.create_namespace ||
-            !s_linkerFuncs.link_namespaces ||
-            !s_linkerFuncs.link_namespaces_all_libs ||
-            !s_linkerFuncs.get_exported_namespace) {
+    if (!has_required_namespace_funcs(&s_linkerFuncs)) {
         LOGE("Failed to resolve Android linker namespace functions! Cannot run nsbypass.");
         exit(121);
     }
+    test_namespace_funcs(s_linkerFuncs);
     // Create if not yet made, which is the case if tests are disabled
     if (!escapeNs){
         escapeNs = s_linkerFuncs.create_namespace(
@@ -656,7 +715,9 @@ bool private_link_namespaces_all_libs(
         struct android_namespace_t* from,
         struct android_namespace_t* to)
 {
-    if (is_android_6_or_lower()) return false;
+    if (is_android_6_or_lower() || !s_linkerFuncs.link_namespaces_all_libs) {
+        return false;
+    }
     return s_linkerFuncs.link_namespaces_all_libs(
             from,
             to);

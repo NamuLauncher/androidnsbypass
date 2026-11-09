@@ -17,6 +17,7 @@ android {
     defaultConfig {
         minSdk = 21 // This is sort of a lie, the lib turns itself off on versions below sdk24
                     // I don't want to figure out android 4 compiling so uh, you get this.
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         externalNativeBuild {
             cmake {
                 cppFlags("-std=c++17")
@@ -51,4 +52,9 @@ android {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
     }
+}
+
+dependencies {
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
 }

@@ -38,6 +38,7 @@ public class NativeLib {
             long to,
             String sharedLibsSonames);
 
+    /** API 26–27에서는 지원하지 않는 연결이므로 false를 반환한다. */
     public static native boolean linkNamespacesAllLibs(
             long from,
             long to);
