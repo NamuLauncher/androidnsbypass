@@ -53,8 +53,7 @@ android_link_namespaces_t android_link_namespaces = private_link_namespaces;
 // This only affects SONAME look up paths so it should not break any code, if anything it should
 // fix broken code.
 bool linkernsbypass_link_namespace_to_default_all_libs(struct android_namespace_t *to){
-    // escapeNs should be set by constructor or the process has exited already
-    // therefore this should never return a false if you didn't pass a nullptr.
+    // API 26–27은 escapeNs가 있어도 all-libs 연결을 지원하지 않아 false를 반환한다.
     return private_link_namespaces_all_libs(to, get_escape_namespace());
 }
 

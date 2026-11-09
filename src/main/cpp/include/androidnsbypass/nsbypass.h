@@ -117,7 +117,7 @@ bool private_link_namespaces(
  * @param from Namespace that will be allowed to look in "to"
  * @param to Additional namespace that "from" is allowed to look into, unlike
  * private_link_namespaces, passing NULL results in an error.
- * @return Whether successful.
+ * @return 연결 성공 여부. API 26–27은 이 기능을 지원하지 않아 false를 반환한다.
  */
 bool private_link_namespaces_all_libs(
         struct android_namespace_t* from,
